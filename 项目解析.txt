@@ -1,0 +1,99 @@
+我将针对每一个文件中的代码讲述它的功能和作用。给大家详细的解释一下每一段代码的逻辑和实现方式。
+
+
+
+首先对于第一个模块，他基本上全部都是相关的配置类，包括redis的基本配置，工具类的封装
+，一级缓存和二级缓存的相关配置等等，当然核心部分我觉得是caffeine一致性的配置，代码基本上都是固定的模板，大家可以直接拿来使用。
+
+redis-caffeine-cache-core 模块
+
+RedisCache.java
+提供对 Redis 的基础操作封装
+包含对 String、Hash、Set、List 等数据结构的操作方法
+作为二级缓存的底层实现，提供数据持久化能力
+
+L2CacheConfig.java
+定义二级缓存的配置参数
+包含 Caffeine 和 Redis 的配置项
+支持组合缓存策略配置，如是否开启一级缓存等
+
+
+L2CacheProperties.java
+Spring Boot 配置属性绑定类
+用于读取 application.yml 中 l2cache 前缀的配置
+将配置文件映射到 L2CacheConfig 对象
+
+
+RedisCaffeineCache.java
+核心实现类，继承自 Spring 的 AbstractValueAdaptingCache
+实现了两级缓存的协调逻辑：
+读取时先从 level1Cache (Caffeine) 获取
+一级缓存未命中则从 level2Cache (Redis) 获取
+写入时同时更新两级缓存
+通过 CacheMessage 实现多节点缓存同步
+
+
+RedisCaffeineCacheManager.java
+缓存管理器实现，负责创建和管理 RedisCaffeineCache 实例
+根据配置初始化 Caffeine 缓存参数
+实现 Spring CacheManager 接口
+
+
+CacheMessage.java
+缓存变更消息实体类
+包含 cacheName 和 key 信息
+用于在分布式环境中同步缓存变更
+
+
+CacheMessageListener.java
+Redis 消息监听器
+监听缓存变更消息，清理本地一级缓存
+保证多节点间缓存一致性
+
+
+第二个模块就是通过springboot将上面那个模块中的内容注入成bean对象，方便我们在业务代码中直接使用缓存相关的功能。
+
+
+第三个模块就是具体的实践模块了
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+两级缓存结合机制
+读取流程：
+通过 @Cacheable 注解触发缓存读取
+RedisCaffeineCache.lookup() 方法首先检查 Caffeine 一级缓存
+一级缓存未命中则查询 Redis 二级缓存
+Redis 命中后将数据回填到 Caffeine 一级缓存
+写入流程：
+通过 @CachePut 注解更新缓存
+同时更新 Redis 二级缓存和 Caffeine 一级缓存
+发布 CacheMessage 消息通知其他节点
+缓存同步：
+通过 Redis Pub/Sub 机制实现多节点同步
+一个节点缓存变更时发布消息
+其他节点通过 CacheMessageListener 接收消息并清理本地缓存
