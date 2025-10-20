@@ -5,12 +5,15 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.Accessors;
 import org.springframework.boot.autoconfigure.cache.CacheType;
+import org.springframework.stereotype.Component;
+
 import java.util.*;
 
 
 @Getter
 @Setter
 @Accessors(chain = true)
+//@Component
 public class L2CacheConfig {
 
 

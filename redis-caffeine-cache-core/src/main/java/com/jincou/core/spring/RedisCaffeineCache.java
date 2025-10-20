@@ -6,7 +6,9 @@ import com.jincou.core.config.L2CacheConfig;
 import com.jincou.core.sync.CacheMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.support.AbstractValueAdaptingCache;
+import org.springframework.stereotype.Component;
 import org.springframework.util.CollectionUtils;
 
 
@@ -17,8 +19,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
-
+//@Component
 public class RedisCaffeineCache extends AbstractValueAdaptingCache {
+
 
 	private final Logger logger = LoggerFactory.getLogger(RedisCaffeineCache.class);
 

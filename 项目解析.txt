@@ -54,19 +54,60 @@ Redis 消息监听器
 第二个模块就是通过springboot将上面那个模块中的内容注入成bean对象，方便我们在业务代码中直接使用缓存相关的功能。
 
 
-第三个模块就是具体的实践模块了
+第三个模块就是具体的实践模块了，我记得之前做苍穹外卖的时候确实讲过这个注解，但是当时只是讲述了如何使用注解使用redis,而且是非常简陋的使用
+相当于没有找本地缓存直接去redis里面找了，但我还真忘了当时项目里面怎么配置的了。直接学这个项目的配置就行了，完全覆盖他那个项目
+
+
+两级缓存实现机制
+
+
+读取流程实现
+当调用 queryUser 方法时：
+Spring Cache 拦截到 @Cacheable 注解
+调用 RedisCaffeineCache.lookup() 方法进行缓存查找
+首先检查 Caffeine 一级缓存 (level1Cache)
+如果一级缓存未命中，查询 Redis 二级缓存 (level2Cache)
+Redis 命中后将数据回填到 Caffeine 一级缓存
+
+
+写入流程实现
+当调用 putUser 方法时：
+Spring Cache 拦截到 @CachePut 注解
+调用 RedisCaffeineCache.put() 方法
+同时更新 Redis 二级缓存和 Caffeine 一级缓存
+通过 CacheMessage 发布消息通知其他节点
+缓存同步实现
+通过 Redis Pub/Sub 机制实现多节点同步：
+一个节点缓存变更时通过 push() 方法发布 CacheMessage 消息
+其他节点通过 CacheMessageListener 接收消息
+接收方调用 clearLocal() 方法清理本地一级缓存
+
+
+
+控制器使用示例
+CaffeineCacheController.java
+提供了REST接口来测试缓存功能：
+/queryUser - 测试缓存读取
+/queryUserSyncList - 测试同步缓存读取
+/putUser - 测试缓存更新
+/evictUserSync - 测试缓存删除
+配置文件支持
+application.yml
+配置了两级缓存的具体参数：
+Redis 连接配置
+Caffeine 缓存参数（过期时间、容量等）
+一级缓存开关控制
+缓存同步主题配置
 
 
 
 
-
-
-
-
-
-
-
-
+同时通过yml文件我们可以知道
+实际工作流程
+选择性缓存：不是所有 Redis 数据都会进入本地缓存，只有配置中指定的热点数据才会缓存到本地
+容量控制：即使所有指定数据都进入本地缓存，最大也只有3个对象
+自动淘汰：当超过 maximumSize 限制时，Caffeine 会自动淘汰最旧或最少使用的数据
+时间淘汰：即使数量未满，超过过期时间的数据也会被自动清理
 
 
 

@@ -1,0 +1,457 @@
+redisCache这个类我已经用烂了，就不想说了，大家学一学redis一看就能看懂了，我下面来说说其他的文件
+
+
+
+
+
+L2CacheConfig文件，二级缓存配置类
+
+allowNullValues设置为true的时候，可以防止缓存穿透，因为可以存储空值
+dynamic为true表示可以动态根据缓存名称创建缓存实例，默认为true
+cacheNames: 缓存名称集合
+composite: 组合缓存配置
+caffeine: Caffeine缓存配置
+redis: Redis缓存配置
+
+然后定义空的配置接口，作为标记接口
+Composite类是组合缓存配置，包含一级缓存和二级缓存的配置
+如：
+ public static class Composite implements Config {
+
+        /**
+         * 是否全部启用一级缓存，默认false
+         */
+        private boolean l1AllOpen = false;
+
+        /**
+         * 是否手动启用一级缓存，默认false
+         */
+        private boolean l1Manual = false;
+
+        /**
+         * 手动配置走一级缓存的缓存key集合，针对单个key维度
+         */
+        private Set<String> l1ManualKeySet = new HashSet<>();
+
+        /**
+         * 手动配置走一级缓存的缓存名字集合，针对cacheName维度
+         */
+        private Set<String> l1ManualCacheNameSet = new HashSet<>();
+    }
+
+
+    Caffeine类是一级缓存的配置
+    自动刷新配置
+    线程池大小
+    刷新频率
+    过期策略（访问后过期、写入后过期）
+    容量控制（初始化大小、最大大小）
+
+    如：
+    public static class Caffeine implements Config {
+              /**
+               * 是否自动刷新过期缓存 true 表示是(默认)，false 表示否
+               */
+              private boolean autoRefreshExpireCache = false;
+
+              /**
+               * 缓存刷新调度线程池的大小
+               * 默认为 CPU数 * 2
+               */
+              private Integer refreshPoolSize = Runtime.getRuntime().availableProcessors();
+
+              /**
+               * 缓存刷新的频率(秒)
+               */
+              private Long refreshPeriod = 30L;
+
+              /**
+               * 同一个key的发布消息频率(毫秒)
+               */
+              private Long publishMsgPeriodMilliSeconds = 500L;
+
+              /** 访问后过期时间，单位秒*/
+              private long expireAfterAccess;
+
+              /** 写入后过期时间，单位秒*/
+              private long expireAfterWrite;
+
+              /** 写入后刷新时间，单位秒*/
+              private long refreshAfterWrite;
+
+              /** 初始化大小*/
+              private int initialCapacity;
+
+              /** 最大缓存对象个数，超过此数量时之前放入的缓存将失效*/
+              private long maximumSize;
+          }
+
+
+    Redis类是二级缓存的配置
+    定义了Redis缓存配置类，包含：
+    全局过期时间
+    每个缓存名称的特定过期时间
+    缓存同步使用的Redis主题名称
+    public static class Redis implements Config {
+
+            /** 全局过期时间，单位毫秒，默认不过期*/
+            private long defaultExpiration = 0;
+
+            /** 每个cacheName的过期时间，单位毫秒，优先级比defaultExpiration高*/
+            private Map<String, Long> expires = new HashMap<>();
+
+            /** 缓存更新时通知其他节点的topic名称*/
+            private String topic = "cache:redis:caffeine:topic";
+        }
+
+    Spring Boot配置属性绑定类
+    @ConfigurationProperties(prefix = "l2cache")
+    public class L2CacheProperties {
+        /**
+         * 缓存配置
+         */
+        private L2CacheConfig config;
+
+        public L2CacheConfig getConfig() {
+            return config;
+        }
+
+        public void setConfig(L2CacheConfig config) {
+            this.config = config;
+        }
+    }
+
+    这个类用于将 application.yml 中以 l2cache 为前缀的配置绑定到 L2CacheConfig 对象。
+
+
+
+
+
+
+
+
+
+
+RedisCaffeineCache.java - 核心缓存实现类
+
+logger: 日志记录器
+cacheName: 缓存名称
+level1Cache: 一级缓存（Caffeine）
+level2Cache: 二级缓存（Redis）
+defaultExpiration: 默认过期时间
+expires: 各缓存名称的过期时间映射
+composite: 组合缓存配置
+redisConfig: Redis配置
+openedL1Cache: 记录一级缓存是否启用过的原子布尔值
+topic: Redis消息主题
+keyLockMap: 键级别的锁映射，用于并发控制
+
+
+ private final Logger logger = LoggerFactory.getLogger(RedisCaffeineCache.class);
+
+    /**
+     * 缓存名称
+     */
+    private String cacheName;
+
+    /**
+     * 一级缓存
+     */
+    private Cache<Object, Object> level1Cache;
+
+    /**
+     * 二级缓存实例
+     */
+    private RedisCache level2Cache;
+
+    private long defaultExpiration = 0;
+    private Map<String, Long> expires;
+    private L2CacheConfig.Composite composite;
+    private L2CacheConfig.Redis redisConfig;
+
+    /**
+     * 记录是否启用过一级缓存，只要启用过，则记录为true
+     * <p>
+     * 以下情况可能造成本地缓存与redis缓存不一致的情况 : 开启本地缓存，更新用户数据后，关闭本地缓存,更新用户信息到redis，开启本地缓存
+     * 解决方法：put、evict的情况下，判断配置中心一级缓存开关已关闭且本地一级缓存开关已开启的情况下，清除一级缓存
+     */
+    private AtomicBoolean openedL1Cache = new AtomicBoolean();
+
+    private String topic = "cache:redis:caffeine:topic";
+    private Map<String, ReentrantLock> keyLockMap = new ConcurrentHashMap<String, ReentrantLock>();
+
+        protected RedisCaffeineCache(boolean allowNullValues) {
+            super(allowNullValues);
+        }
+
+        public RedisCaffeineCache(String cacheName, RedisCache level2Cache,
+                                  Cache<Object, Object> level1Cache, L2CacheConfig l2CacheConfig) {
+            super(l2CacheConfig.isAllowNullValues());
+            this.cacheName = cacheName;
+            this.level2Cache = level2Cache;
+            this.level1Cache = level1Cache;
+            this.defaultExpiration = l2CacheConfig.getRedis().getDefaultExpiration();
+            this.expires = l2CacheConfig.getRedis().getExpires();
+            this.topic = l2CacheConfig.getRedis().getTopic();
+            this.composite = l2CacheConfig.getComposite();
+            this.redisConfig = l2CacheConfig.getRedis();
+        }
+        构造函数，初始化各种配置参数。
+
+
+
+
+
+
+
+    实现 get 方法，这是缓存获取的核心逻辑：
+    首先调用 lookup 方法尝试从缓存中获取
+    如果缓存未命中，使用可重入锁保证同一时间只有一个线程加载数据
+    再次检查缓存（双重检查锁模式）
+    如果还是未命中，调用 valueLoader 加载数据
+    将加载的数据放入缓存
+
+
+
+    实现 put 方法，用于将数据放入缓存：
+    检查是否允许存储空值
+    获取过期时间并设置到Redis缓存
+    检查是否启用一级缓存
+    如果启用一级缓存，发送缓存变更消息并更新本地缓存
+
+
+
+    实现 putIfAbsent 方法，只有当key不存在时才放入缓存：
+    使用synchronized关键字保证原子性
+    先检查Redis中是否存在该key
+    如果不存在，则设置缓存并通知其他节点
+
+
+
+    实现缓存清除方法：
+    evict: 清除指定key的缓存
+    clear: 清除所有缓存
+
+
+
+    实现 lookup 方法，这是缓存查找的核心逻辑：
+    首先检查是否启用一级缓存
+    如果启用且一级缓存中有数据，则直接返回
+    否则从二级缓存（Redis）中获取数据
+    如果从Redis获取到数据且启用一级缓存，则将数据回填到一级缓存
+
+
+    辅助方法：
+    getKey: 构造Redis中存储的完整key
+    getExpire: 获取当前缓存的过期时间
+
+    实现 push 方法，用于通过Redis发布订阅机制通知其他节点缓存变更
+
+    实现 clearLocal 方法，用于清理本地缓存，在接收到缓存变更消息时调用。
+
+
+    实现一级缓存启用检查逻辑：
+    ifL1Open: 综合检查是否启用一级缓存
+    ifL1Open: 检查缓存名称维度是否启用一级缓存
+    ifL1OpenByKey: 检查特定key是否启用一级缓存
+
+
+
+
+
+
+
+    RedisCaffeineCacheManager.java - 缓存管理器
+
+     private final Logger logger = LoggerFactory.getLogger(RedisCaffeineCacheManager.class);
+
+        private ConcurrentMap<String, Cache> cacheMap = new ConcurrentHashMap<String, Cache>();
+
+        private L2CacheConfig l2CacheConfig;
+        private RedisCache redisService;
+        private boolean dynamic = true;
+        private Set<String> cacheNames;
+
+        定义缓存管理器所需的成员变量
+
+         @Override
+            public Cache getCache(String name) {
+                Cache cache = cacheMap.get(name);
+                if(cache != null) {
+                    return cache;
+                }
+                if(!dynamic && !cacheNames.contains(name)) {
+                    return cache;
+                }
+
+                cache = new RedisCaffeineCache(name, redisService, caffeineCache(), l2CacheConfig);
+                Cache oldCache = cacheMap.putIfAbsent(name, cache);
+                logger.debug("create cache instance, the cache name is : {}", name);
+                return oldCache == null ? cache : oldCache;
+            }
+            实现 getCache 方法，用于获取指定名称的缓存实例：
+            首先从缓存映射中查找
+            如果未找到且允许动态创建，则创建新的缓存实例
+
+
+
+
+                public com.github.benmanes.caffeine.cache.Cache<Object, Object> caffeineCache(){
+                    Caffeine<Object, Object> cacheBuilder = Caffeine.newBuilder();
+                    if(l2CacheConfig.getCaffeine().getExpireAfterAccess() > 0) {
+                        cacheBuilder.expireAfterAccess(l2CacheConfig.getCaffeine().getExpireAfterAccess(), TimeUnit.SECONDS);
+                    }
+                    if(l2CacheConfig.getCaffeine().getExpireAfterWrite() > 0) {
+                        cacheBuilder.expireAfterWrite(l2CacheConfig.getCaffeine().getExpireAfterWrite(), TimeUnit.SECONDS);
+                    }
+                    if(l2CacheConfig.getCaffeine().getInitialCapacity() > 0) {
+                        cacheBuilder.initialCapacity(l2CacheConfig.getCaffeine().getInitialCapacity());
+                    }
+                    if(l2CacheConfig.getCaffeine().getMaximumSize() > 0) {
+                        cacheBuilder.maximumSize(l2CacheConfig.getCaffeine().getMaximumSize());
+                    }
+                    if(l2CacheConfig.getCaffeine().getRefreshAfterWrite() > 0) {
+                        cacheBuilder.refreshAfterWrite(l2CacheConfig.getCaffeine().getRefreshAfterWrite(), TimeUnit.SECONDS);
+                    }
+                    return cacheBuilder.build();
+                }
+
+                实现 caffeineCache 方法，用于创建配置好的Caffeine缓存实例。
+
+                    @Override
+                    public Collection<String> getCacheNames() {
+                        return this.cacheNames;
+                    }
+
+                    public void clearLocal(String cacheName, Object key) {
+                        Cache cache = cacheMap.get(cacheName);
+                        if(cache == null) {
+                            return ;
+                        }
+
+                        RedisCaffeineCache redisCaffeineCache = (RedisCaffeineCache) cache;
+                        redisCaffeineCache.clearLocal(key);
+                    }
+
+                    实现其他方法：
+                    getCacheNames: 返回所有缓存名称
+                    clearLocal: 清理指定缓存的本地数据
+
+
+
+
+                    CacheMessage.java - 缓存消息实体类
+
+                    @Data
+                    @AllArgsConstructor
+                    @NoArgsConstructor
+                    public class CacheMessage implements Serializable {
+                        private static final long serialVersionUID = 5987219310442078193L;
+
+                        /** 缓存名称 */
+                        private String cacheName;
+                        /** 缓存key */
+                        private Object key;
+                    }
+
+
+
+
+
+
+
+
+
+
+讲了这么多，说一下实现了什么效果吧
+
+Spring Cache 注解功能增强详解
+@Cacheable 注解增强效果
+基础功能增强
+原始功能：缓存方法结果 增强后功能：
+双层缓存查询：先查 level1Cache (Caffeine)，再查 level2Cache (Redis)
+智能回填机制：Redis命中后自动回填到本地缓存
+并发控制优化：通过 keyLockMap 防止缓存击穿
+
+
+
+注意，有坑！！！！！！！！！！
+写回过程：
+请求 key="user01"，一级缓存未命中
+从 Redis 获取到数据
+检查 userCache 在 l1ManualCacheNameSet 中，允许写回
+如果 Caffeine 缓存未满，则写回成功
+如果 Caffeine 缓存已满，则根据淘汰策略可能写回失败
+
+但是如果L1AllOpen为true的话，那就是全部写回了，只有满了才会失败
+
+
+
+这里可以选择全部写回和热点写回的，必须要注意
+
+
+@Cacheable(key = "'cache_user_id_' + #userId", value = "userCache")
+public UserDTO queryUser(String userId) {
+    // 增强效果：首次查询走Redis，后续查询优先走本地缓存
+}
+同步加载增强 (sync = true)
+@Cacheable(value = "userCache", key = "#userId", sync = true)
+public List<UserDTO> queryUserSyncList(String userId) {
+    // 增强效果：利用Caffeine的同步机制，确保高并发下只有一个线程执行方法体
+}
+增强特性：
+分布式锁优化：通过本地 ReentrantLock 实现更高效的并发控制
+避免重复计算：相同key的请求只有一个线程真正执行业务逻辑
+
+
+
+@CachePut 注解增强效果
+基础功能增强
+原始功能：更新缓存 增强后功能：
+双写一致性：同时更新Redis和本地Caffeine缓存
+分布式通知：通过 CacheMessage 通知其他节点更新缓存
+
+@CachePut(value = "userCache", key = "#userId")
+public UserDTO putUser(String userId, UserDTO userDTO) {
+    // 增强效果：不仅更新本地缓存，还会通过Redis Pub/Sub通知其他节点
+    return userDTO;
+}
+
+增强特性：
+实时同步：所有节点的缓存同时更新
+数据一致性：避免不同节点间出现数据不一致
+
+
+
+@CacheEvict 注解增强效果
+基础功能增强
+原始功能：清除缓存 增强后功能：
+双层清除：同时清除Redis和本地Caffeine缓存
+广播清除：通过 CacheMessage 通知其他节点清除缓存
+
+@CacheEvict(value = "userCache", key = "#userId")
+public String evictUserSync(String userId) {
+    // 增强效果：不仅清除本地缓存，还会通知其他节点清除对应缓存
+    return userId;
+}
+
+增强特性：
+彻底清除：确保所有节点的缓存都被清除
+防止脏读：避免清除缓存后其他节点仍读取到旧数据
+
+
+
+特殊增强功能
+1. 空值缓存支持
+// 配置 allowNulLValues = true 后
+@Cacheable(value = "userCache", key = "#userId")
+public UserDTO queryUser(String userId) {
+    // 即使返回null也会被缓存，防止缓存穿透
+    return null;
+}
+2. 条件化缓存
+@Cacheable(value = "userCache", key = "#userId", condition = "#userId != null")
+public UserDTO getUserById(String userId) {
+    // 增强效果：只对满足条件的请求进行缓存操作
+}
+
