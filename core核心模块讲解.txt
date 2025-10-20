@@ -374,6 +374,21 @@ Spring Cache 注解功能增强详解
 并发控制优化：通过 keyLockMap 防止缓存击穿
 
 
+l1ManualKeySet 配置项
+作用：用于手动指定哪些具体的缓存键（key）需要使用一级缓存（Caffeine）
+格式：是一个字符串列表，每个元素代表一个需要使用一级缓存的具体缓存键，精确到一个字也不能错
+
+l1ManualCacheNameSet 配置项
+作用：用于手动指定哪些缓存名称（cacheName）需要使用一级缓存
+格式：是一个字符串列表，每个元素代表一个缓存名称，则该缓存名称下的所有键都使用一级缓存
+
+如果上面两个都不满足，则直接找redis，不写回本地缓存，但是如果L1AllOpen为true的话，那就是全部写回了，只有满了才会失败
+
+
+看源码就可以看出来，嘻嘻嘻。。。。。。。。。。
+
+
+我觉得这次代码写的质量很高啊，多多加油
 
 注意，有坑！！！！！！！！！！
 写回过程：
@@ -455,3 +470,57 @@ public UserDTO getUserById(String userId) {
     // 增强效果：只对满足条件的请求进行缓存操作
 }
 
+
+
+
+
+最后再补充一点
+使用Spring Cache注解的时候必须带上value的值了，要不然找不到对应的Cache
+什么意思呢
+如果你们研究过Caffeine，就会明白
+一级缓存的数据存放在每个应用节点的本地内存中，具体来说：
+每个应用实例都有独立的本地内存缓存
+数据不会在网络节点间共享
+使用的是 com.github.benmanes.caffeine.cache.Cache 对象来存储
+是这么个东西
+ Cache<Object, Object>
+ 而我写的时候，代码是这个
+
+ // 在 RedisCaffeineCacheManager 中
+ private ConcurrentMap<String, Cache> cacheMap = new ConcurrentHashMap<String, Cache>();
+
+ @Override
+ public Cache getCache(String name) {
+     Cache cache = cacheMap.get(name);
+     if(cache != null) {
+         return cache;
+     }
+     // 动态创建缓存实例
+     cache = new RedisCaffeineCache(name, redisService, caffeineCache(), l2CacheConfig);
+     Cache oldCache = cacheMap.putIfAbsent(name, cache);
+     return oldCache == null ? cache : oldCache;
+ }
+
+每个 cacheName 对应一个独立的 RedisCaffeineCache 实例
+这个实例存着一级缓存的Cache键值对象和二级缓存的Redis对象
+所有的缓存实例通过 cacheMap 进行管理，如果你不指定，就找不到对应的存储缓存键和值的Cache对象了
+
+
+同时，如果你用键找值的时候，它的具体原理就是CacheManager通过cacheName找到对应的RedisCaffeineCache实例
+，如果找到的话就返回对应的Cache对象，没有的话就新创建一个，紧接着就会调用AbstractValueAdaptingCache 中的get方法和注解中的key去找值
+，这也是SpringCache的底层原理。。。。。。。。哈哈哈哈
+
+
+
+
+Caffeine Cache中的键和值
+键(Key)
+来源: 直接使用Spring Cache注解中的key值
+类型: Object类型，可以是任何对象
+示例: 如果注解为@Cacheable(value = "userCache", key = "#userId")，且userId为"123"，则键就是"123"
+值(Value)
+来源: Spring Cache注解对应方法的返回值
+类型: Object类型，支持任意Java对象
+特殊处理:
+当启用allowNullValues时，null值会被包装存储
+通过toStoreValue()和fromStoreValue()方法进行值的转换处理

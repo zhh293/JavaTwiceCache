@@ -28,7 +28,6 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
-
         <dependency>
             <groupId>com.jincou</groupId>
             <artifactId>redis-caffeine-cache-starter</artifactId>
