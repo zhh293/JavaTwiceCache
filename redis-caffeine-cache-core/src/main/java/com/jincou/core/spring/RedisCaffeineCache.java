@@ -108,7 +108,8 @@ public class RedisCaffeineCache extends AbstractValueAdaptingCache {
 			if (value != null) {
 				return (T) value;
 			}
-			//代表走被拦截的方法逻辑,并返回方法的返回结果
+			//代表走被拦截的方法逻辑,并返回方法的返回结果，就是说在缓存中没找到想要的值的时候，会执行注解注释的方法，并且把方法返回的结果缓存下来。
+			//这里面调用的put方法中有判断是否开启一级缓存的代码，不用担心会让两级缓存无脑存储结果。。。。。。。。谢谢
 			value = valueLoader.call();
 			Object storeValue = toStoreValue(value);
 			put(key, storeValue);
