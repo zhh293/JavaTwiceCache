@@ -24,6 +24,7 @@ public class CacheMessageListener implements MessageListener {
         this.redisCaffeineCacheManager = redisCaffeineCacheManager;
     }
 
+    //开始给其他节点传播信息
     @Override
     public void onMessage(Message message, byte[] pattern) {
         CacheMessage cacheMessage = (CacheMessage) redisService.getRedisTemplate().getValueSerializer().deserialize(message.getBody());
